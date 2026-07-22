@@ -1,0 +1,470 @@
+// November Trip - Database Schema
+// Covers: Supplier (Hotel/Tour), Product (Tour Builder), Quotation, Report
+// Every major entity carries an optional odooId + odooModel so it can be
+// linked/synced to a record living in Odoo.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// 3. SUPPLIER
+// ---------------------------------------------------------------------------
+
+model HotelSupplier {
+  id            String   @id @default(cuid())
+  hotelCode     String   @unique
+  name          String
+  province      String?
+  logoUrl       String?  // shown as the thumbnail in list views - separate from the photo gallery
+  contactName   String?
+  phone         String?  // kept as the "primary" phone for Odoo sync - mirrors phones[0]
+  email         String?  // kept as the "primary" email for Odoo sync - mirrors emails[0]
+  phones        String[] @default([]) // up to 6, enforced in the API layer
+  emails        String[] @default([]) // up to 5, enforced in the API layer
+  bankName          String?
+  bankAccountName   String?
+  bankAccountNumber String?
+  contractStart DateTime?
+  contractEnd   DateTime?
+  starRating    Int?     // 1-5, null = not rated yet
+  address       String?
+  taxId         String?
+  images        HotelImage[]
+  conditions    HotelCondition[]
+
+  roomTypes     RoomType[]
+  mealCosts     MealCost[]
+  tourDays      TourDay[]
+  products      Product[]
+
+  // Odoo link
+  odooId        Int?
+  odooModel     String?  @default("res.partner")
+  odooSyncedAt  DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model HotelImage {
+  id        String        @id @default(cuid())
+  hotel     HotelSupplier @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  hotelId   String
+  url       String
+  createdAt DateTime      @default(now())
+}
+
+model RoomType {
+  id          String        @id @default(cuid())
+  hotel       HotelSupplier @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  hotelId     String
+  name        String
+  costPrice   Decimal       @db.Decimal(12, 2)
+  sellPrice   Decimal       @db.Decimal(12, 2)
+  maxPax      Int
+  imageUrl    String?
+
+  seasonPrices HolidaySeasonPrice[]
+  tourDays     TourDay[]
+  quoteDays    QuotationDay[]
+
+  // Checkbox-style "what's included" tags (Room With Breakfast, Free transfer,
+  // etc.) - the tag catalog is shared/global so users can add new options
+  // once and reuse them across every room type.
+  inclusions   InclusionTag[] @relation("RoomTypeInclusions")
+
+  // Odoo product link (used so Quotation days can become sale.order.line)
+  odooProductId       Int?
+  odooProductSyncedAt DateTime?
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+// Global, user-extensible catalog of "included in the room price" checkboxes
+// (e.g. Room With Breakfast, Free Airport Transfer) shared across all hotels.
+model InclusionTag {
+  id        String     @id @default(cuid())
+  label     String     @unique
+  details   String?    // pre-filled info shown automatically when this option is checked (e.g. breakfast hours, pool hours) - typed once, reused everywhere
+  roomTypes RoomType[] @relation("RoomTypeInclusions")
+  createdAt DateTime   @default(now())
+}
+
+// Global, user-extensible catalog of condition "types" (e.g. Cancellation
+// Policy, Check-in/Check-out, Children Policy) - shared across all hotels so
+// the list of categories grows once and is reused everywhere.
+model ConditionType {
+  id         String            @id @default(cuid())
+  label      String            @unique
+  conditions HotelCondition[]
+  policies   QuotationPolicy[]
+  createdAt  DateTime          @default(now())
+}
+
+// A single free-text condition entered against a hotel, tagged with one of
+// the condition types above (e.g. Cancellation Policy: "Free cancellation up
+// to 7 days before check-in").
+model HotelCondition {
+  id              String        @id @default(cuid())
+  hotel           HotelSupplier @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  hotelId         String
+  conditionType   ConditionType @relation(fields: [conditionTypeId], references: [id])
+  conditionTypeId String
+  content         String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MealCost {
+  id          String        @id @default(cuid())
+  hotel       HotelSupplier @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  hotelId     String
+  mealType    String        // e.g. "Breakfast", "Lunch", "Dinner"
+  adultPrice  Decimal       @db.Decimal(12, 2)
+  childPrice  Decimal       @db.Decimal(12, 2)
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model HolidaySeasonPrice {
+  id          String    @id @default(cuid())
+  roomType    RoomType  @relation(fields: [roomTypeId], references: [id], onDelete: Cascade)
+  roomTypeId  String
+  dateFrom    DateTime  // exact calendar date - hotel rate sheets often split
+  dateTo      DateTime  // mid-month (e.g. 16 Apr), not just whole months
+  price       Decimal   @db.Decimal(12, 2)
+  imageUrl    String?
+  // Which days of week this price applies within the date range, using
+  // JS Date.getDay() numbering (0=Sun..6=Sat). Empty array (the default)
+  // means "every day" - lets one hotel have, say, a Fri/Sat rate and a
+  // separate Sun-Thu rate for the *same* date range without needing to
+  // duplicate the room type itself.
+  daysOfWeek  Int[]     @default([])
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model TourSupplier {
+  id            String   @id @default(cuid())
+  supplierCode  String   @unique
+  name          String
+  province      String?
+  phone         String?  // เบอร์ส่วนกลาง (main/central)
+  phoneSales    String?  // เบอร์เซลล์ (sales contact)
+  email         String?
+  line          String?
+  whatsapp      String?
+  contractStart DateTime?
+  contractEnd   DateTime?
+
+  activities    TourActivity[]
+  products      Product[]
+
+  // Odoo link
+  odooId        Int?
+  odooModel     String?  @default("res.partner")
+  odooSyncedAt  DateTime?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model TourActivity {
+  id            String       @id @default(cuid())
+  supplier      TourSupplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierId    String
+  name          String
+  activityCode  String?      // product/SKU code, e.g. "ACT-001" - shown and synced to Odoo as default_code
+  category      String       @default("Tour") // "Tour" | "Activities"
+  imageUrl      String?
+  costPrice     Decimal      @db.Decimal(12, 2)
+  sellPrice     Decimal      @db.Decimal(12, 2)
+  childCostPrice Decimal?    @db.Decimal(12, 2)
+  childSellPrice Decimal?    @db.Decimal(12, 2)
+  conditions    String?      // terms/conditions - min pax, cancellation policy, etc.
+  contractStart DateTime?
+  contractEnd   DateTime?
+
+  tourDays      TourDay[]
+  quoteDays     QuotationDay[]
+
+  // Odoo product link (used so Quotation days can become sale.order.line)
+  odooProductId       Int?
+  odooProductSyncedAt DateTime?
+
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// 1. PRODUCT (Tour Builder)
+// ---------------------------------------------------------------------------
+
+model Product {
+  id          String   @id @default(cuid())
+  tourCode    String   @unique
+  tourName    String
+  price       Decimal  @db.Decimal(12, 2)
+  days        Int
+  startDate   DateTime? // optional - when set, itinerary day costs auto-pick the matching seasonal price
+  adults      Int      @default(2)
+  children    Int      @default(0)
+
+  // Supplier field shown on the tour form itself (field #4 in the spec),
+  // separate from the per-day supplier picked inside the itinerary below.
+  supplierType    String?        // "Hotel" | "Tour"
+  hotelSupplier   HotelSupplier? @relation(fields: [hotelSupplierId], references: [id], onDelete: SetNull)
+  hotelSupplierId String?
+  tourSupplier    TourSupplier?  @relation(fields: [tourSupplierId], references: [id], onDelete: SetNull)
+  tourSupplierId  String?
+
+  itinerary   TourDay[]
+
+  // Odoo link
+  odooId       Int?
+  odooModel    String?  @default("product.template")
+  odooSyncedAt DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model TourDay {
+  id            String        @id @default(cuid())
+  product       Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId     String
+  dayNumber     Int
+  place         String?
+  category      String        // "Hotels" | "Tour" | "Activities"
+
+  hotel         HotelSupplier? @relation(fields: [hotelSupplierIdRef], references: [id], onDelete: SetNull)
+  hotelSupplierIdRef String?
+  roomType      RoomType?      @relation(fields: [roomTypeId], references: [id], onDelete: SetNull)
+  roomTypeId    String?
+
+  tourActivity  TourActivity?  @relation(fields: [tourActivityId], references: [id], onDelete: SetNull)
+  tourActivityId String?
+
+  costPrice     Decimal       @db.Decimal(12, 2) @default(0)
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// 2. QUOTATION
+// ---------------------------------------------------------------------------
+
+model Quotation {
+  id            String   @id @default(cuid())
+  quoteCode     String   @unique
+  tourCode      String?
+  customerName  String
+  customerEmail String?
+  customerPhone String?
+  customerAddress String? // shown on the PDF, below the customer name
+  customerLineId String? // LINE user ID (starts with U...) to push messages to
+  days          Int
+  startDate     DateTime? // optional - when set, itinerary day costs auto-pick the matching seasonal price
+  adults        Int      @default(2)
+  children      Int      @default(0)
+  sellPrice     Decimal  @db.Decimal(12, 2)
+  costPrice     Decimal  @db.Decimal(12, 2) @default(0)
+  status        QuotationStatus @default(QUOTED)
+
+  // VAT is off by default (many quotes are VAT-exempt or price-inclusive
+  // already) - toggle per quotation. Rate is editable in case it's ever
+  // not the standard 7%.
+  includeVat    Boolean  @default(false)
+  vatRate       Decimal  @db.Decimal(5, 2) @default(7)
+
+  itinerary     QuotationDay[]
+  policies      QuotationPolicy[]
+
+  // Fields shown on the Report page once a quotation is confirmed as a
+  // booking - kept on the Quotation itself so Report reads real data
+  // instead of a separately re-typed ledger.
+  guideName     String?
+  includesFlight Boolean @default(false)
+
+  // Odoo link -> typically sale.order
+  odooId        Int?
+  odooModel     String?  @default("sale.order")
+  odooSyncedAt  DateTime?
+  odooPartnerId Int?     // resolved/created res.partner for customerName
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model QuotationDay {
+  id            String        @id @default(cuid())
+  quotation     Quotation     @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  quotationId   String
+  dayNumber     Int
+  place         String?
+  category      String        // "Hotels" | "Tour" | "Activities"
+
+  roomType      RoomType?     @relation(fields: [roomTypeId], references: [id], onDelete: SetNull)
+  roomTypeId    String?
+
+  tourActivity  TourActivity? @relation(fields: [tourActivityId], references: [id], onDelete: SetNull)
+  tourActivityId String?
+
+  costPrice     Decimal       @db.Decimal(12, 2) @default(0)
+  sellPrice     Decimal       @db.Decimal(12, 2) @default(0)
+  odooLineId    Int?          // sale.order.line id once pushed
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+enum QuotationStatus {
+  QUOTED           // เสนอราคา
+  AWAITING_PAYMENT  // รอเก็บเงิน
+  PARTIALLY_PAID    // เก็บเงินแล้วครึ่งหนึ่ง
+  PAID              // เก็บเงินครบแล้ว
+  CANCELLED
+}
+
+// A free-text policy/condition line on a quotation (payment terms,
+// cancellation policy, documents required, etc.), tagged with one of the
+// same user-extensible ConditionType categories used by Hotel Supplier
+// conditions - so the type catalog is shared and grows once for the whole app.
+model QuotationPolicy {
+  id              String        @id @default(cuid())
+  quotation       Quotation     @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  quotationId     String
+  conditionType   ConditionType @relation(fields: [conditionTypeId], references: [id])
+  conditionTypeId String
+  content         String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// AUTH
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         UserRole @default(STAFF)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
+// ---------------------------------------------------------------------------
+// ODOO INTEGRATION
+// ---------------------------------------------------------------------------
+
+// Stores connection config so it can be changed from the UI instead of
+// redeploying. Falls back to env vars if no row exists.
+model OdooConfig {
+  id           String   @id @default("singleton")
+  url          String
+  db           String
+  username     String
+  apiKey       String
+  // Studio custom model mapping, e.g. {"HotelSupplier": "x_hotel_supplier"}
+  modelMap     Json     @default("{}")
+  // Per-entity logical-field -> Odoo technical-field mapping, e.g.
+  // {"HotelSupplier": {"name": "name", "phone": "phone", "taxId": "vat"}}
+  fieldMap     Json     @default("{}")
+  updatedAt    DateTime @updatedAt
+}
+
+// Generic file attachments (contracts, docs, anything beyond a simple
+// image) - reusable on any entity's detail page. entityType/entityId
+// point at whichever record it belongs to (e.g. "TourSupplier" + its id)
+// instead of a foreign key per entity, so new detail pages can adopt this
+// without a schema change.
+model Attachment {
+  id         String   @id @default(cuid())
+  entityType String   // e.g. "TourSupplier", "HotelSupplier"
+  entityId   String
+  fileName   String
+  fileUrl    String
+  fileSize   Int
+  mimeType   String
+  uploadedAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+}
+
+// Audit trail for every push/pull so sync issues are debuggable
+model OdooSyncLog {
+  id          String   @id @default(cuid())
+  entity      String   // e.g. "HotelSupplier", "Quotation"
+  entityId    String
+  direction   String   // "PUSH" (app -> odoo) | "PULL" (odoo -> app)
+  odooModel   String
+  odooId      Int?
+  status      String   // "SUCCESS" | "FAILED"
+  message     String?
+  createdAt   DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// IN-APP SETTINGS (no .env editing required for any of these)
+// ---------------------------------------------------------------------------
+
+// UI theme - public (read without login) so the Login page can theme itself.
+model AppSettings {
+  id           String   @id @default("singleton")
+  primaryColor String   @default("#2563eb") // Tailwind blue-600
+  fontFamily   String   @default("Inter")
+  companyName  String   @default("November Trip")
+
+  // Shown on the Quotation PDF header - all optional, PDF gracefully
+  // omits whatever isn't filled in.
+  companyLogoUrl String?
+  companyAddress String?
+  companyTaxId   String?
+  companyPhone   String?
+  companyEmail   String?
+
+  // How many days before a hotel's contractEnd counts as "ใกล้หมดอายุ" and
+  // triggers the warning banner/sound on that hotel's page. Admin-tunable
+  // from Settings > แจ้งเตือน instead of being hardcoded.
+  contractWarningDays Int @default(7)
+
+  updatedAt    DateTime @updatedAt
+}
+
+model EmailSettings {
+  id         String   @id @default("singleton")
+  smtpHost   String
+  smtpPort   Int      @default(587)
+  smtpSecure Boolean  @default(false)
+  smtpUser   String
+  smtpPass   String
+  fromName   String   @default("November Trip")
+  fromEmail  String
+  updatedAt  DateTime @updatedAt
+}
+
+model LineSettings {
+  id                 String   @id @default("singleton")
+  channelAccessToken String
+  updatedAt          DateTime @updatedAt
+}
